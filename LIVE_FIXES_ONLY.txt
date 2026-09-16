@@ -1,0 +1,25 @@
+CITADEL — LIVE DATA FIXES ONLY
+
+UI / styling intentionally unchanged.
+
+1) LIVE TRAFFIC
+- TomTom Flow Segment Data now keeps returned road geometry.
+- Actual returned traffic segments are drawn on the Cesium map and colour-coded by congestion.
+- Clicking a live segment opens the existing inspector glass panel.
+- Shows current speed, free-flow speed, congestion, confidence, closure state, segment length and estimated cars.
+- TomTom does not provide a literal vehicle count; estimated cars are clearly labelled ESTIMATED.
+- Existing CITADEL vehicle agents continue to use the nearest live TomTom speed ratio, so their movement speed reacts to live traffic.
+
+2) CLICK-ANYWHERE 15 KM RESPONSE QUERY
+- Clicking empty map space queries OpenStreetMap Overpass around the clicked coordinate.
+- Radius: 15 km.
+- Existing inspector UI shows counts for hospitals/clinics, police, fire stations and safe/assembly sites.
+- Also lists nearest mapped response facilities.
+- A subtle 15 km map radius is drawn around the selected point.
+
+3) LIVE WEATHER VISUAL FIX
+- Open-Meteo current conditions remain the source.
+- Current precipitation is model-derived over a 15-minute interval, so trace precipitation no longer automatically produces visible rain.
+- Cesium rain now requires BOTH a precipitation WMO code and >=0.35 mm current 15-minute precipitation/rain.
+- Heavy rain threshold >=2.0 mm.
+- If a precipitation code exists but the amount is only trace, CITADEL renders CLOUDY instead of fake rain.

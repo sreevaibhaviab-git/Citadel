@@ -1,0 +1,41 @@
+CITADEL LIVE DATA MODE
+======================
+
+1) Cesium 3D city
+   VITE_CESIUM_ION_TOKEN=...
+
+2) Live weather
+   No key required. Uses Open-Meteo current conditions for Bengaluru.
+
+3) Live mapped emergency / safe facilities
+   No key required. Uses OpenStreetMap Overpass to query hospitals/clinics, fire stations,
+   police stations, shelters and emergency assembly points around the demo district.
+
+4) Live traffic flow
+   Optional key required:
+   VITE_TOMTOM_API_KEY=...
+   The prototype samples TomTom Traffic Flow Segment Data at multiple points and uses
+   current speed vs free-flow speed to weight CITADEL road demand.
+
+5) Traffic signals
+   CITADEL DOES NOT claim to read live Bengaluru traffic-signal controller phases.
+   When live traffic is connected, signal timing becomes an ADAPTIVE MODEL driven by
+   congestion and emergency priority. In Scenario Lab, signals use the simulation model.
+
+LIVE vs SCENARIO LAB
+--------------------
+LIVE FUSION:
+- Open-Meteo weather -> environment / hazard context
+- TomTom flow (if key) -> traffic state / routing weights
+- OpenStreetMap Overpass -> mapped hospitals, police, fire, safe assembly candidates
+- CITADEL algorithms -> affected-population estimate, routing, signal optimisation,
+  response batches, clearance ETA and recovery plan
+
+SCENARIO LAB:
+- Live influence paused
+- User can manually set weather and traffic
+- Run flood / earthquake / grid / compound scenarios under controlled conditions
+
+IMPORTANT:
+Human-impact values and response-batch counts are MODEL ESTIMATES, not observed casualty counts.
+The UI labels them accordingly.

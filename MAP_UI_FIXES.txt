@@ -1,0 +1,14 @@
+CITADEL MAP / CAMERA POLISH
+
+- NORMAL MAP (2D) and CITY FABRIC (3D) are now explicit view modes.
+- Switching to NORMAL MAP hides the 3D tileset and morphs Cesium to 2D.
+- Switching back to CITY FABRIC restores streamed 3D geometry.
+- Mouse zoom tuned with higher minimum altitude, lower maximum range and smoother inertia.
+- Added smooth ZOOM IN / ZOOM OUT controls in VIEWS.
+- Initial camera is higher and less steep to reduce motion discomfort.
+- Disaster camera no longer dives too close to the hazard.
+- Infrastructure labels fade away at distance to reduce visual clutter.
+- UI chrome softened and simplified so the map remains visually dominant.
+
+REALITY / PROVENANCE
+The streamed 3D city layer is based on real-world geospatial sources. Google Photorealistic 3D Tiles are preferred when available; Cesium OSM Buildings are the fallback. Coverage, freshness and building detail vary, so do not claim every Bengaluru building is exact or current. CITADEL operational roads, infrastructure dependencies, agents and scenario telemetry remain simulation/model layers unless explicitly sourced otherwise.

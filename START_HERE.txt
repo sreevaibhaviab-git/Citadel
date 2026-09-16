@@ -1,0 +1,16 @@
+CITADEL — REVAMPED REAL 3D CITY BUILD
+
+1) Open THIS extracted folder in VS Code.
+2) Create .env in this folder:
+   VITE_CESIUM_ION_TOKEN=YOUR_NEW_TOKEN
+3) Terminal:
+   npm install
+   npm run dev
+4) Open http://localhost:5173/
+
+IMPORTANT
+- Fresh load ALWAYS starts on the cinematic CITADEL welcome page.
+- ENTER CITY -> boot -> Bengaluru 3D city.
+- The city first tries Google Photorealistic 3D Tiles, then falls back to Cesium OSM 3D Buildings.
+- Operational values (traffic, utilities, hospital loads, incidents) are explicitly labeled SIMULATED.
+- No fake black-box buildings are generated.
