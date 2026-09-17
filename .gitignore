@@ -7,3 +7,10 @@ dist
 .env.*
 node_modules/
 dist/
+_citadel_duplicate_backup/
+
+Citadel/
+_citadel_duplicate_backup/
+
+Citadel/
+_citadel_duplicate_backup/
