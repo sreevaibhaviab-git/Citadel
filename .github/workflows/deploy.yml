@@ -37,7 +37,7 @@ jobs:
         run: npm ci
 
       - name: Build CITADEL
-        run: npm run build -- --base=/Citadel/
+        run: npm run build -- --base=/${{ github.event.repository.name }}/
         env:
           VITE_CESIUM_ION_TOKEN: ${{ secrets.VITE_CESIUM_ION_TOKEN }}
           VITE_TOMTOM_API_KEY: ${{ secrets.VITE_TOMTOM_API_KEY }}
