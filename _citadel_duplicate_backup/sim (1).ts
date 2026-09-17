@@ -1,5 +1,6 @@
 import { assets, edgeBetween, edges, fromLonLat, LAYER_KEYS, neighbours, nodes, toLonLat } from './config';
 import { fetchFacilitiesAround, fetchLiveFacilities, fetchLiveTraffic, fetchLiveWeather, fetchTrafficAwareRoute } from './live';
+import { analyseDependencyFailure } from './dependencies';
 
 const edgeByKey = (key: string) => edges.find((e) => e.key === key);
 import type {
@@ -32,6 +33,7 @@ import type {
   NearbyFacilityMatch,
   RouteAlternative,
   RoadHoverState,
+  DependencyAnalysis,
 } from './types';
 
 /* --------------------------------------------------------------------------
@@ -335,6 +337,7 @@ export class CitySim {
       responsePlan: this.responsePlan(),
       mapProbe: this.mapProbe ? { ...this.mapProbe, facilities: this.mapProbe.facilities.map((f) => ({ ...f })) } : null,
       roadHover: this.roadHover ? { ...this.roadHover } : null,
+      dependencyAnalysis: this.dependencyAnalysis(),
     };
   }
 
@@ -724,8 +727,40 @@ export class CitySim {
     this.emit();
   }
 
+  dependencyAnalysis(assetId?: string | null): DependencyAnalysis | null {
+    const id = assetId ?? this.selectedId;
+    if (!id || !assets.some((a) => a.id === id)) return null;
+    return analyseDependencyFailure(id, this.metrics.populationActive);
+  }
+
+  traceAssetDependencies(id: string) {
+    const analysis = this.dependencyAnalysis(id);
+    if (!analysis) return;
+    this.selectedId = id;
+    this.layers.DEPENDENCIES = true;
+    this.log(`DEPENDENCY TRACE // ${id} → ${analysis.affected.length} DOWNSTREAM ASSETS`, 'INFO');
+    if (analysis.hiddenRelations.length) {
+      this.notice('HIDDEN DEPENDENCIES DISCOVERED', [
+        `${analysis.hiddenRelations.length} NON-OBVIOUS CROSS-LAYER LINKS`,
+        `CASCADE RISK ${analysis.cascadeRisk}/100 // MODELLED EXPOSURE ${analysis.estimatedPeopleAffected.toLocaleString()}`,
+      ], 'INFO');
+    }
+    this.algorithmTrace = [
+      {
+        id: `dep-${id}-${Date.now()}`,
+        label: 'DEPENDENCY DISCOVERY',
+        algorithm: analysis.algorithm,
+        output: `${analysis.direct.length} direct / ${analysis.indirect.length} indirect / ${analysis.hiddenRelations.length} hidden`,
+        tone: analysis.cascadeRisk >= 75 ? 'ALERT' : analysis.cascadeRisk >= 50 ? 'WARN' : 'INFO',
+      },
+      ...this.algorithmTrace.filter((x) => x.label !== 'DEPENDENCY DISCOVERY').slice(0, 20),
+    ];
+    this.emit();
+  }
+
   select(id: string | null) {
     this.selectedId = id;
+    if (id && assets.some((a) => a.id === id)) this.layers.DEPENDENCIES = true;
     this.emit();
   }
 

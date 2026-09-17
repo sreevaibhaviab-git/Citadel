@@ -1,0 +1,28 @@
+CITADEL DEPENDENCY INTELLIGENCE PATCH
+
+NEW FILE:
+  src/city/dependencies.ts
+
+REPLACE:
+  src/city/types.ts
+  src/city/sim.ts
+  src/city/world.ts
+  src/city/CityView.tsx
+  src/city/hud/InspectorDock.tsx
+
+Test:
+  npm run build
+  npm run dev
+
+Demo:
+  1. Click P2 / P1 / W1 / H1 on the map.
+  2. Dependency lines appear automatically.
+  3. Cyan = known/direct network relationship.
+  4. Blue = indirect cascade path.
+  5. Purple dashed = hidden/model-inferred cross-layer relationship.
+  6. Green dashed = alternate/backup connection.
+  7. Right inspector shows direct + indirect dependents, cascade risk,
+     modelled people exposed, consequences, hidden relationships and backups.
+  8. Click DISCOVER + TRACE DEPENDENCIES to log the discovery in the event feed.
+
+Important: hidden links are model-inferred relationships, not claimed as verified municipal utility topology.

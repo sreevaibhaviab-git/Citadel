@@ -219,3 +219,86 @@ export const sourceDocumentation = {
   traffic: 'TomTom Traffic Flow Segment Data when VITE_TOMTOM_API_KEY is configured',
   facilities: 'OpenStreetMap Overpass read-only POI query',
 };
+
+
+export interface LocationSearchResult {
+  id: string;
+  displayName: string;
+  lat: number;
+  lon: number;
+  type: string;
+}
+
+/** Lightweight location search for Bengaluru. Nominatim is only queried after
+ * the user types, never continuously. Keep requests human-scale / low volume. */
+export async function searchLocations(query: string): Promise<LocationSearchResult[]> {
+  const q = query.trim();
+  if (q.length < 3) return [];
+  const params = new URLSearchParams({
+    q: `${q}, Bengaluru, Karnataka`,
+    format: 'jsonv2',
+    limit: '6',
+    addressdetails: '1',
+    countrycodes: 'in',
+  });
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+    headers: { 'Accept-Language': 'en' },
+  });
+  if (!res.ok) throw new Error(`Location search ${res.status}`);
+  const rows = await res.json();
+  return (rows ?? [])
+    .map((row: any) => ({
+      id: String(row.place_id),
+      displayName: String(row.display_name ?? q),
+      lat: Number(row.lat),
+      lon: Number(row.lon),
+      type: String(row.type ?? row.addresstype ?? 'place'),
+    }))
+    .filter((row: LocationSearchResult) => Number.isFinite(row.lat) && Number.isFinite(row.lon));
+}
+
+export interface TrafficAwareRoute {
+  coordinates: { lat: number; lon: number }[];
+  lengthMeters: number;
+  travelTimeSeconds: number;
+  trafficDelaySeconds: number;
+}
+
+/** TomTom traffic-aware road routing. This is what emergency vehicles use in
+ * LIVE mode so their visible path follows actual road geometry and current
+ * traffic instead of flying directly between simulation nodes. */
+export async function fetchTrafficAwareRoute(
+  fromLat: number,
+  fromLon: number,
+  toLat: number,
+  toLon: number,
+): Promise<TrafficAwareRoute> {
+  const key = import.meta.env.VITE_TOMTOM_API_KEY?.trim();
+  if (!key) throw new Error('VITE_TOMTOM_API_KEY not configured');
+  const locations = `${fromLat},${fromLon}:${toLat},${toLon}`;
+  const params = new URLSearchParams({
+    key,
+    traffic: 'true',
+    travelMode: 'car',
+    routeType: 'fastest',
+    instructionsType: 'text',
+    computeTravelTimeFor: 'all',
+  });
+  const res = await fetch(`https://api.tomtom.com/routing/1/calculateRoute/${locations}/json?${params.toString()}`);
+  if (!res.ok) throw new Error(`TomTom Routing ${res.status}`);
+  const json = await res.json();
+  const route = json.routes?.[0];
+  if (!route) throw new Error('TomTom returned no route');
+  const coordinates = (route.legs ?? [])
+    .flatMap((leg: any) => leg.points ?? [])
+    .map((pt: any) => ({ lat: Number(pt.latitude), lon: Number(pt.longitude) }))
+    .filter((pt: any) => Number.isFinite(pt.lat) && Number.isFinite(pt.lon));
+  if (coordinates.length < 2) throw new Error('TomTom route geometry unavailable');
+  const summary = route.summary ?? {};
+  return {
+    coordinates,
+    lengthMeters: Number(summary.lengthInMeters ?? 0),
+    travelTimeSeconds: Number(summary.travelTimeInSeconds ?? 0),
+    trafficDelaySeconds: Number(summary.trafficDelayInSeconds ?? 0),
+  };
+}

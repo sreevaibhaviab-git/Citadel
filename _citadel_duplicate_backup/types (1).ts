@@ -228,6 +228,56 @@ export interface Asset {
   layer: LayerKey;
 }
 
+
+export type DependencyCategory = 'POWER' | 'WATER' | 'ACCESS' | 'EMERGENCY' | 'OPERATIONAL' | 'BACKUP';
+
+export interface DependencyRelation {
+  id: string;
+  from: string;
+  to: string;
+  category: DependencyCategory;
+  label: string;
+  strength: number;
+  confidence: number;
+  hidden: boolean;
+  inferred: boolean;
+  backup?: boolean;
+  description: string;
+}
+
+export interface DependencyImpactNode {
+  assetId: string;
+  depth: number;
+  path: string[];
+  relationIds: string[];
+  hiddenPath: boolean;
+  consequence: string;
+}
+
+export interface DependencyAlternative {
+  id: string;
+  targetAssetId: string;
+  replacementAssetId?: string;
+  type: 'ALTERNATE CONNECTION' | 'BACKUP SYSTEM' | 'MUTUAL AID';
+  label: string;
+  confidence: number;
+  description: string;
+}
+
+export interface DependencyAnalysis {
+  sourceAssetId: string;
+  direct: DependencyImpactNode[];
+  indirect: DependencyImpactNode[];
+  affected: DependencyImpactNode[];
+  relations: DependencyRelation[];
+  hiddenRelations: DependencyRelation[];
+  alternatives: DependencyAlternative[];
+  consequences: string[];
+  cascadeRisk: number;
+  estimatedPeopleAffected: number;
+  algorithm: string;
+}
+
 export type VehicleKind = 'CAR' | 'BUS' | 'TRUCK' | 'EMS' | 'FIRE' | 'POLICE';
 
 export interface Vehicle {
@@ -413,4 +463,5 @@ export interface Snapshot {
   responsePlan: ResponsePlan | null;
   mapProbe: MapProbeState | null;
   roadHover: RoadHoverState | null;
+  dependencyAnalysis: DependencyAnalysis | null;
 }

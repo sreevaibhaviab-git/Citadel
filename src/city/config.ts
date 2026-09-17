@@ -21,6 +21,10 @@ export function toLonLat(x: number, y: number): [number, number] {
   return [CENTER_LON + x / M_PER_DEG_LON, CENTER_LAT + y / M_PER_DEG_LAT];
 }
 
+export function fromLonLat(lon: number, lat: number): [number, number] {
+  return [(lon - CENTER_LON) * M_PER_DEG_LON, (lat - CENTER_LAT) * M_PER_DEG_LAT];
+}
+
 export const nodes: Node[] = [];
 for (let row = 0; row < ROWS; row++) {
   for (let col = 0; col < COLS; col++) {

@@ -1,5 +1,6 @@
 import { assets, edgeBetween, edges, fromLonLat, LAYER_KEYS, neighbours, nodes, toLonLat } from './config';
 import { fetchFacilitiesAround, fetchLiveFacilities, fetchLiveTraffic, fetchLiveWeather, fetchTrafficAwareRoute } from './live';
+import { analyseDependencyFailure } from './dependencies';
 
 const edgeByKey = (key: string) => edges.find((e) => e.key === key);
 import type {
@@ -32,6 +33,11 @@ import type {
   NearbyFacilityMatch,
   RouteAlternative,
   RoadHoverState,
+  DependencyAnalysis,
+  PlaceableHazardKind,
+  HazardTimelineStage,
+  CascadePropagationEvent,
+  DamageSeverity,
 } from './types';
 
 /* --------------------------------------------------------------------------
@@ -220,6 +226,8 @@ export class CitySim {
   liveFacilitiesError = '';
   mapProbe: MapProbeState | null = null;
   roadHover: RoadHoverState | null = null;
+  hazardPlacement: PlaceableHazardKind | null = null;
+  private dependencyTrace: DependencyAnalysis | null = null;
 
   vehicles: Vehicle[] = [];
   pedestrians: Pedestrian[] = [];
@@ -316,7 +324,17 @@ export class CitySim {
       followId: this.followId,
       lightningAt: this.lightningAt,
       status: this.statusLabel(),
-      disaster: this.disaster ? { ...this.disaster, affectedEdges: [...this.disaster.affectedEdges], affectedAssets: [...this.disaster.affectedAssets], failedAssets: [...this.disaster.failedAssets] } : null,
+      disaster: this.disaster ? {
+        ...this.disaster,
+        affectedEdges: [...this.disaster.affectedEdges],
+        affectedAssets: [...this.disaster.affectedAssets],
+        failedAssets: [...this.disaster.failedAssets],
+        timeline: this.disaster.timeline.map((x) => ({ ...x })),
+        floodArrivalMinuteByEdge: { ...this.disaster.floodArrivalMinuteByEdge },
+        floodDepthByEdge: { ...this.disaster.floodDepthByEdge },
+        damageByAsset: { ...this.disaster.damageByAsset },
+        cascadeEvents: this.disaster.cascadeEvents.map((x) => ({ ...x })),
+      } : null,
       interventions: this.interventions.map((x) => ({ ...x })),
       recoveryPlan: this.recoveryPlan.map((x) => ({ ...x, unlocks: [...x.unlocks] })),
       algorithmTrace: this.algorithmTrace.map((x) => ({ ...x })),
@@ -335,6 +353,17 @@ export class CitySim {
       responsePlan: this.responsePlan(),
       mapProbe: this.mapProbe ? { ...this.mapProbe, facilities: this.mapProbe.facilities.map((f) => ({ ...f })) } : null,
       roadHover: this.roadHover ? { ...this.roadHover } : null,
+      hazardPlacement: this.hazardPlacement,
+      dependencyAnalysis: this.dependencyTrace ? {
+        ...this.dependencyTrace,
+        direct: this.dependencyTrace.direct.map((x) => ({ ...x, path: [...x.path], relationIds: [...x.relationIds] })),
+        indirect: this.dependencyTrace.indirect.map((x) => ({ ...x, path: [...x.path], relationIds: [...x.relationIds] })),
+        affected: this.dependencyTrace.affected.map((x) => ({ ...x, path: [...x.path], relationIds: [...x.relationIds] })),
+        relations: this.dependencyTrace.relations.map((x) => ({ ...x })),
+        hiddenRelations: this.dependencyTrace.hiddenRelations.map((x) => ({ ...x })),
+        alternatives: this.dependencyTrace.alternatives.map((x) => ({ ...x })),
+        consequences: [...this.dependencyTrace.consequences],
+      } : null,
     };
   }
 
@@ -408,6 +437,10 @@ export class CitySim {
     if (facilities.status === 'fulfilled') {
       this.liveFacilities = facilities.value;
       this.liveFacilitiesError = '';
+      if (this.selectedId?.startsWith('REAL_ASSET:')) {
+        const realId = this.selectedId.slice('REAL_ASSET:'.length);
+        this.dependencyTrace = analyseDependencyFailure(realId, this.liveFacilities, this.metrics.populationActive);
+      }
     } else {
       this.liveFacilities = [];
       this.liveFacilitiesError = String(facilities.reason ?? 'facility sync failed');
@@ -530,7 +563,7 @@ export class CitySim {
     const [lon, lat] = toLonLat(x, y);
     const nearby = (kind: NearbyFacilityMatch['kind']) => this.liveFacilities
       .filter((f) => f.kind === kind)
-      .map((f) => ({ id: f.id, name: f.name, kind: f.kind, distanceKm: haversineKm(lat, lon, f.lat, f.lon), source: f.source }))
+      .map((f) => ({ id: f.id, name: f.name, kind, distanceKm: haversineKm(lat, lon, f.lat, f.lon), source: f.source }))
       .sort((a, b) => a.distanceKm - b.distanceKm)
       .slice(0, 4);
 
@@ -724,8 +757,63 @@ export class CitySim {
     this.emit();
   }
 
+
+  armHazardPlacement(kind: PlaceableHazardKind | null) {
+    this.hazardPlacement = kind;
+    this.roadHover = null;
+    if (kind) {
+      this.follow(null);
+      this.notice('PLACE SCENARIO', [`${kind} // CLICK THE MAP`, 'SELECT THE EXACT ORIGIN / EPICENTRE'], 'INFO');
+    }
+    this.emit();
+  }
+
+  dependencyAnalysis(): DependencyAnalysis | null {
+    return this.dependencyTrace;
+  }
+
+  traceAssetDependencies(id: string) {
+    const realId = id.startsWith('REAL_ASSET:') ? id.slice('REAL_ASSET:'.length) : id;
+    const analysis = analyseDependencyFailure(realId, this.liveFacilities, this.metrics.populationActive);
+    if (!analysis) {
+      this.log('DEPENDENCY TRACE // REAL MAPPED ASSET NOT FOUND', 'INFO');
+      return;
+    }
+    this.dependencyTrace = analysis;
+    this.selectedId = `REAL_ASSET:${realId}`;
+    this.layers.DEPENDENCIES = true;
+    const source = this.liveFacilities.find((x) => x.id === realId);
+    this.log(`DEPENDENCY TRACE // ${source?.name ?? realId} → ${analysis.affected.length} MAPPED ASSETS`, 'INFO');
+    if (analysis.hiddenRelations.length) {
+      this.notice('HIDDEN DEPENDENCIES DISCOVERED', [
+        `${analysis.hiddenRelations.length} NON-OBVIOUS CROSS-LAYER LINKS`,
+        `CASCADE RISK ${analysis.cascadeRisk}/100 // MODELLED EXPOSURE ${analysis.estimatedPeopleAffected.toLocaleString()}`,
+      ], 'INFO');
+    }
+    this.algorithmTrace = [
+      {
+        id: `dep-${realId}-${Date.now()}`,
+        label: 'REAL-ASSET DEPENDENCY DISCOVERY',
+        algorithm: analysis.algorithm,
+        output: `${analysis.direct.length} direct / ${analysis.indirect.length} indirect / ${analysis.hiddenRelations.length} hidden`,
+        tone: analysis.cascadeRisk >= 75 ? 'ALERT' : analysis.cascadeRisk >= 50 ? 'WARN' : 'INFO',
+      },
+      ...this.algorithmTrace.filter((x) => x.label !== 'REAL-ASSET DEPENDENCY DISCOVERY').slice(0, 20),
+    ];
+    this.emit();
+  }
+
+  selectLiveAsset(id: string) {
+    this.traceAssetDependencies(id);
+  }
+
   select(id: string | null) {
+    if (id?.startsWith('REAL_ASSET:')) {
+      this.traceAssetDependencies(id);
+      return;
+    }
     this.selectedId = id;
+    if (!id) this.dependencyTrace = null;
     this.emit();
   }
 
@@ -912,28 +1000,50 @@ export class CitySim {
   triggerFire(): Incident {
     const edge = pick(edges);
     const a = nodes[edge.a];
+    return this.triggerFireAt(a.x + rand(-120, 120), a.y + rand(-120, 120));
+  }
+
+  triggerFireAt(x: number, y: number): Incident {
+    const edge = [...edges].sort((ea, eb) => {
+      const aa = nodes[ea.a], ab = nodes[ea.b];
+      const ba = nodes[eb.a], bb = nodes[eb.b];
+      const da = Math.hypot((aa.x + ab.x) / 2 - x, (aa.y + ab.y) / 2 - y);
+      const db = Math.hypot((ba.x + bb.x) / 2 - x, (ba.y + bb.y) / 2 - y);
+      return da - db;
+    })[0];
+    const a = nodes[edge.a];
+    const b = nodes[edge.b];
+    const targetNode = Math.hypot(a.x - x, a.y - y) <= Math.hypot(b.x - x, b.y - y) ? edge.a : edge.b;
     const inc: Incident = {
       id: `INC-${String(this.incidentId++).padStart(3, '0')}`,
       kind: 'FIRE',
       severity: 'MODERATE',
       edgeId: edge.id,
       edgeKey: edge.key,
-      zone: `Z${1 + (edge.a % 9)}`,
-      x: a.x + rand(-120, 120),
-      y: a.y + rand(-120, 120),
+      zone: `Z${1 + (targetNode % 9)}`,
+      x,
+      y,
       openedAt: this.simSeconds,
       clearanceSeconds: Math.round(rand(18, 28)) * 60,
-      capacityBefore: 100,
+      capacityBefore: Math.round(edge.capacity * 100),
       capacityAfter: 70,
       corridor: [],
       active: true,
+      elapsedSeconds: 0,
+      fireRadius: 35,
+      fireMaxRadius: 430,
+      fireGrowthRate: 8,
+      responseEtaSeconds: 0,
+      containment: 0,
     };
+    this.hazardPlacement = null;
     this.incidents.push(inc);
-    edge.capacity = 0.7;
+    edge.capacity = Math.min(edge.capacity, 0.7);
 
-    this.log(`STRUCTURE FIRE // ZONE ${inc.zone}`, 'ALERT');
-    this.notice('PRIORITY EVENT', [`FIRE // ZONE ${inc.zone}`, 'FIRE RESPONSE INITIATED'], 'ALERT');
-    this.dispatch('FIRE', inc, edge.a);
+    this.log(`STRUCTURE FIRE // USER-PLACED // ${edge.id}`, 'ALERT');
+    this.notice('PRIORITY EVENT', [`FIRE // USER-SELECTED LOCATION`, `NEAREST ROAD ${edge.id} // FIRE RESPONSE INITIATED`], 'ALERT');
+    this.dispatch('FIRE', inc, targetNode);
+    this.dispatch('POLICE', inc, targetNode);
     this.metrics.resilience = clamp(this.metrics.resilience - rand(3, 6), 30, 100);
     this.metrics.waterDemand = clamp(this.metrics.waterDemand + rand(3, 6), 30, 100);
     this.emit();
@@ -1037,7 +1147,138 @@ export class CitySim {
     this.metrics.emsAvailable = this.availableEms();
   }
 
-  triggerDisaster(kind: DisasterKind) {
+  private timelineFor(kind: DisasterKind): HazardTimelineStage[] {
+    const labels = kind === 'FLOOD'
+      ? [
+          ['RAINFALL ONSET', 'water enters low-lying road cells'],
+          ['ROAD SPREAD', 'flood front follows connected low/drainage-poor roads'],
+          ['MOBILITY IMPACT', 'closures trigger rerouting and emergency delay'],
+          ['SERVICE CASCADE', 'hospital / utility demand reflects access loss'],
+        ]
+      : kind === 'EARTHQUAKE'
+      ? [
+          ['SHAKING', 'distance-decay shaking field generated'],
+          ['DAMAGE CLASSIFICATION', 'asset vulnerability produces graded damage'],
+          ['ACCESS LOSS', 'damaged links reduce road capacity and response access'],
+          ['SERVICE CASCADE', 'health / emergency demand reacts to network loss'],
+        ]
+      : kind === 'GRID CASCADE'
+      ? [
+          ['SUBSTATION LOSS', 'primary grid node fails'],
+          ['SIGNAL DEGRADATION', 'dependent traffic control loses reliability'],
+          ['CONGESTION + EMS DELAY', 'road pressure grows and response ETA rises'],
+          ['HOSPITAL LOAD', 'delayed access increases downstream service load'],
+        ]
+      : [
+          ['MULTI-HAZARD ONSET', 'weather + seismic exposure begins'],
+          ['NETWORK DAMAGE', 'roads / utilities degrade'],
+          ['MOBILITY CASCADE', 'rerouting and emergency delay increase'],
+          ['SERVICE CASCADE', 'critical services absorb secondary load'],
+        ];
+    const minutes = [0, 5, 15, 30];
+    return minutes.map((minute, i) => ({
+      minute,
+      label: labels[i][0],
+      detail: labels[i][1],
+      state: i === 0 ? 'ACTIVE' : 'PENDING',
+    }));
+  }
+
+  private edgeMidpoint(edge: (typeof edges)[number]) {
+    const a = nodes[edge.a], b = nodes[edge.b];
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  /**
+   * Flood travel-time field over the road graph. Lower synthetic elevation and
+   * poorer drainage have lower propagation cost, so the water snakes through
+   * plausible corridors instead of expanding as a circular disk.
+   */
+  private buildFloodArrivalMap(x: number, y: number, radius: number) {
+    const seed = this.nearestEdge(x, y);
+    const arrival: Record<string, number> = { [seed.key]: 0 };
+    const queue: { key: string; cost: number }[] = [{ key: seed.key, cost: 0 }];
+    const byKey = new Map(edges.map((e) => [e.key, e]));
+
+    const transitionCost = (edge: (typeof edges)[number]) => {
+      const m = this.edgeMidpoint(edge);
+      // Deterministic synthetic terrain proxy, explicitly modelled rather than
+      // presented as surveyed elevation data.
+      const terrain = clamp(
+        0.50 +
+          0.18 * Math.sin((m.x + 420) / 410) +
+          0.16 * Math.cos((m.y - 160) / 470) +
+          (this.seeded01(`terrain-${edge.key}`) - 0.5) * 0.26,
+        0.08,
+        0.94
+      );
+      const drainage = 0.25 + this.seeded01(`drain-${edge.key}`) * 0.75;
+      const protection = edge.arterial ? 0.75 : 0;
+      return 1.15 + terrain * 4.8 + drainage * 3.0 + protection;
+    };
+
+    while (queue.length) {
+      queue.sort((a, b) => a.cost - b.cost);
+      const current = queue.shift()!;
+      if (current.cost !== arrival[current.key]) continue;
+      const edge = byKey.get(current.key);
+      if (!edge) continue;
+      const touching = edges.filter((candidate) =>
+        candidate.key !== edge.key &&
+        (candidate.a === edge.a || candidate.a === edge.b || candidate.b === edge.a || candidate.b === edge.b)
+      );
+      touching.forEach((candidate) => {
+        const m = this.edgeMidpoint(candidate);
+        if (Math.hypot(m.x - x, m.y - y) > radius * 1.18) return;
+        const next = current.cost + transitionCost(candidate);
+        if (arrival[candidate.key] === undefined || next < arrival[candidate.key]) {
+          arrival[candidate.key] = next;
+          queue.push({ key: candidate.key, cost: next });
+        }
+      });
+    }
+
+    const maxRaw = Math.max(1, ...Object.values(arrival));
+    Object.keys(arrival).forEach((key) => {
+      // Keep the most exposed corridors within the T+30 demo horizon while
+      // leaving higher / better-drained roads outside the flood front.
+      arrival[key] = clamp((arrival[key] / maxRaw) * 34, 0, 40);
+    });
+    return arrival;
+  }
+
+  private buildCascadeEvents(kind: DisasterKind, x: number, y: number): CascadePropagationEvent[] {
+    const nearestRoad = this.nearestEdge(x, y);
+    const roadMid = this.edgeMidpoint(nearestRoad);
+    const signal = [...this.signals].sort((a, b) => {
+      const na = nodes[a.node], nb = nodes[b.node];
+      return Math.hypot(na.x - x, na.y - y) - Math.hypot(nb.x - x, nb.y - y);
+    })[0];
+    const signalNode = signal ? nodes[signal.node] : nodes[nearestRoad.a];
+    const ems = assets.find((a) => a.kind === 'EMS') ?? assets[0];
+    const hospital = assets.find((a) => a.kind === 'HOSPITAL') ?? assets[0];
+    const source = kind === 'GRID CASCADE' ? assets.find((a) => a.id === 'P2') ?? assets.find((a) => a.kind === 'POWER')! : null;
+    const sourcePoint = source ? { x: source.x, y: source.y, label: source.name } : { x, y, label: kind === 'FLOOD' ? 'FLOOD FRONT' : 'DAMAGE ZONE' };
+
+    if (kind === 'GRID CASCADE') {
+      return [
+        { id: 'grid-fail', minute: 0, label: 'SUBSTATION FAILED', detail: `${sourcePoint.label} unavailable`, tone: 'ALERT', revealed: true, fromX: sourcePoint.x, fromY: sourcePoint.y, fromLabel: sourcePoint.label, toX: sourcePoint.x, toY: sourcePoint.y, toLabel: sourcePoint.label },
+        { id: 'grid-signal', minute: 5, label: 'TRAFFIC SIGNALS DEGRADED', detail: 'dependent signal control loses reliable power', tone: 'WARN', revealed: false, fromX: sourcePoint.x, fromY: sourcePoint.y, fromLabel: sourcePoint.label, toX: signalNode.x, toY: signalNode.y, toLabel: `SIGNAL NODE ${signal?.node ?? nearestRoad.a}` },
+        { id: 'grid-congestion', minute: 15, label: 'CONGESTION GROWS', detail: `${nearestRoad.id} absorbs redistributed traffic`, tone: 'WARN', revealed: false, fromX: signalNode.x, fromY: signalNode.y, fromLabel: 'SIGNAL CONTROL', toX: roadMid.x, toY: roadMid.y, toLabel: nearestRoad.id },
+        { id: 'grid-ems', minute: 20, label: 'AMBULANCE ETA RISES', detail: 'emergency route cost increases', tone: 'ALERT', revealed: false, fromX: roadMid.x, fromY: roadMid.y, fromLabel: nearestRoad.id, toX: ems.x, toY: ems.y, toLabel: ems.name },
+        { id: 'grid-hospital', minute: 30, label: 'HOSPITAL LOAD INCREASES', detail: 'delayed access shifts demand downstream', tone: 'ALERT', revealed: false, fromX: ems.x, fromY: ems.y, fromLabel: ems.name, toX: hospital.x, toY: hospital.y, toLabel: hospital.name },
+      ];
+    }
+
+    return [
+      { id: `${kind.toLowerCase()}-onset`, minute: 0, label: kind === 'FLOOD' ? 'FLOOD FRONT ACTIVE' : 'DAMAGE FIELD ACTIVE', detail: 'primary hazard footprint established', tone: 'ALERT', revealed: true, fromX: sourcePoint.x, fromY: sourcePoint.y, fromLabel: sourcePoint.label, toX: roadMid.x, toY: roadMid.y, toLabel: nearestRoad.id },
+      { id: `${kind.toLowerCase()}-road`, minute: 5, label: 'ROAD CAPACITY DEGRADES', detail: `${nearestRoad.id} becomes a mobility bottleneck`, tone: 'WARN', revealed: false, fromX: sourcePoint.x, fromY: sourcePoint.y, fromLabel: sourcePoint.label, toX: roadMid.x, toY: roadMid.y, toLabel: nearestRoad.id },
+      { id: `${kind.toLowerCase()}-ems`, minute: 15, label: 'EMS REROUTES', detail: 'response path cost increases around damaged links', tone: 'WARN', revealed: false, fromX: roadMid.x, fromY: roadMid.y, fromLabel: nearestRoad.id, toX: ems.x, toY: ems.y, toLabel: ems.name },
+      { id: `${kind.toLowerCase()}-hospital`, minute: 30, label: 'HOSPITAL LOAD INCREASES', detail: 'access delay increases downstream demand', tone: 'ALERT', revealed: false, fromX: ems.x, fromY: ems.y, fromLabel: ems.name, toX: hospital.x, toY: hospital.y, toLabel: hospital.name },
+    ];
+  }
+
+  triggerDisaster(kind: DisasterKind, location?: { x: number; y: number }) {
     this.resetNetworkForScenario();
     this.scenarioBaseline = {
       resilience: this.metrics.resilience,
@@ -1067,6 +1308,12 @@ export class CitySim {
       this.setWeather('STORM');
     }
 
+    if (location && kind !== 'GRID CASCADE') {
+      x = location.x;
+      y = location.y;
+    }
+    this.hazardPlacement = null;
+
     const id = `DS-${String(this.disasterId++).padStart(3, '0')}`;
     this.disaster = {
       id,
@@ -1087,6 +1334,12 @@ export class CitySim {
       exposedPopulation: Math.round(62000 + severity * 82000),
       confidence: kind === 'EARTHQUAKE' ? 0.76 : kind === 'FLOOD' ? 0.84 : 0.81,
       scenarioLabel: kind === 'FLOOD' ? 'EXTREME RAINFALL / URBAN FLOOD' : kind === 'EARTHQUAKE' ? 'M6.4 SEISMIC EVENT' : kind === 'GRID CASCADE' ? 'PRIMARY SUBSTATION LOSS' : 'COMPOUND WEATHER + SEISMIC EVENT',
+      modelMinute: 0,
+      timeline: this.timelineFor(kind),
+      floodArrivalMinuteByEdge: kind === 'FLOOD' || kind === 'COMPOUND' ? this.buildFloodArrivalMap(x, y, radius) : {},
+      floodDepthByEdge: {},
+      damageByAsset: {},
+      cascadeEvents: this.buildCascadeEvents(kind, x, y),
     };
 
     this.layers.TRAFFIC = true;
@@ -1114,15 +1367,19 @@ export class CitySim {
 
     const applyFlood = (strength = 1) => {
       edges.forEach((e) => {
+        const arrivalMinute = d.floodArrivalMinuteByEdge[e.key];
+        if (arrivalMinute === undefined || arrivalMinute > d.modelMinute + 0.75) return;
         const a = nodes[e.a], b = nodes[e.b];
         const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
         const dist = Math.hypot(mx - d.epicenterX, my - d.epicenterY);
-        if (dist > d.radius) return;
-        const exposure = 1 - dist / d.radius;
+        const exposure = clamp(1 - dist / (d.radius * 1.18), 0.08, 1);
         // Synthetic drainage field: deterministic and explicitly labelled as modelled.
         const drainagePenalty = 0.72 + this.seeded01(`drain-${e.key}`) * 0.58;
         const arterialProtection = e.arterial ? 0.86 : 1.05;
-        const risk = exposure * d.severity * drainagePenalty * arterialProtection * strength;
+        const age = Math.max(0, d.modelMinute - arrivalMinute);
+        const depth = clamp(0.16 + age * 0.035 + exposure * 0.48 * drainagePenalty, 0.08, 1.15);
+        d.floodDepthByEdge[e.key] = Math.max(d.floodDepthByEdge[e.key] ?? 0, depth);
+        const risk = depth * d.severity * arterialProtection * strength;
         if (risk > 0.22) {
           affectedEdges.push(e.key);
           e.capacity = clamp(1 - risk * 0.95, 0.08, 0.86);
@@ -1130,14 +1387,32 @@ export class CitySim {
         }
       });
       assets.forEach((a) => {
-        const dist = Math.hypot(a.x - d.epicenterX, a.y - d.epicenterY);
-        const exposure = clamp(1 - dist / d.radius, 0, 1);
+        let exposure = 0;
+        d.affectedEdges.forEach((key) => {
+          const e = edgeByKey(key);
+          if (!e) return;
+          const m = this.edgeMidpoint(e);
+          const dist = Math.hypot(a.x - m.x, a.y - m.y);
+          const depth = d.floodDepthByEdge[key] ?? 0;
+          exposure = Math.max(exposure, depth * clamp(1 - dist / 300, 0, 1));
+        });
+        // During the very first model minute d.affectedEdges may not yet have
+        // been copied from the local array. Include the current pass too.
+        affectedEdges.forEach((key) => {
+          const e = edgeByKey(key);
+          if (!e) return;
+          const m = this.edgeMidpoint(e);
+          const dist = Math.hypot(a.x - m.x, a.y - m.y);
+          const depth = d.floodDepthByEdge[key] ?? 0;
+          exposure = Math.max(exposure, depth * clamp(1 - dist / 300, 0, 1));
+        });
         const vuln = a.kind === 'WATER' ? 1.15 : a.kind === 'POWER' ? 1.0 : a.kind === 'HOSPITAL' ? 0.65 : 0.75;
         const risk = exposure * d.severity * vuln * strength;
         if (risk > 0.18) {
           affectedAssets.push(a.id);
           a.status = risk > 0.7 ? 'CRITICAL' : risk > 0.42 ? 'WARNING' : 'ELEVATED';
           a.primary = clamp(a.primary + risk * 14, 0, 100);
+          d.damageByAsset[a.id] = risk > 0.82 ? 'FAILED' : risk > 0.62 ? 'SEVERE' : risk > 0.38 ? 'MODERATE' : 'MINOR';
           if (risk > 0.82 && a.kind !== 'HOSPITAL') { a.status = 'FAILED'; failedAssets.push(a.id); }
         }
       });
@@ -1166,6 +1441,8 @@ export class CitySim {
         const fragility = baseVuln * (0.7 + this.seeded01(`asset-frag-${a.id}`) * 0.6);
         const failureP = clamp(shaking * fragility * d.severity * strength, 0, 0.98);
         quakeRisks.push({ id: a.id, risk: failureP });
+        const damage: DamageSeverity = failureP > 0.60 ? 'FAILED' : failureP > 0.44 ? 'SEVERE' : failureP > 0.28 ? 'MODERATE' : failureP > 0.18 ? 'MINOR' : 'NONE';
+        d.damageByAsset[a.id] = damage;
         if (failureP > 0.18) {
           affectedAssets.push(a.id);
           a.status = failureP > 0.60 ? 'FAILED' : failureP > 0.44 ? 'CRITICAL' : 'WARNING';
@@ -1189,12 +1466,11 @@ export class CitySim {
     if (kind === 'GRID CASCADE') {
       const p2 = assets.find((a) => a.id === 'P2')!;
       p2.status = 'FAILED'; p2.primary = 0; affectedAssets.push('P2'); failedAssets.push('P2');
-      this.runGridCascade(0.95, affectedAssets, failedAssets);
+      d.damageByAsset[p2.id] = 'FAILED';
     }
     if (kind === 'COMPOUND') {
       applyFlood(0.85);
       applyEarthquake(0.72);
-      this.runGridCascade(0.72, affectedAssets, failedAssets);
     }
 
     d.affectedEdges = Array.from(new Set(affectedEdges));
@@ -1234,6 +1510,163 @@ export class CitySim {
       });
     }
     this.algorithmTrace.push({ id: `grid-${Date.now()}`, label: 'GRID CASCADE', algorithm: 'load redistribution + threshold failure', output: `${powerFailed} substations unavailable`, tone: powerFailed > 1 ? 'ALERT' : 'WARN' });
+  }
+
+  private refreshTimeline(d: DisasterState) {
+    d.timeline.forEach((stage, index) => {
+      const next = d.timeline[index + 1]?.minute ?? Number.POSITIVE_INFINITY;
+      stage.state = d.modelMinute < stage.minute
+        ? 'PENDING'
+        : d.modelMinute >= next
+        ? 'COMPLETE'
+        : 'ACTIVE';
+    });
+  }
+
+  private revealCascadeEvents(d: DisasterState) {
+    d.cascadeEvents.forEach((event) => {
+      if (event.revealed || d.modelMinute < event.minute) return;
+      event.revealed = true;
+      this.log(`${event.label} // ${event.detail.toUpperCase()}`, event.tone === 'ALERT' ? 'ALERT' : 'INFO');
+
+      if (event.id === 'grid-signal') {
+        const closest = [...this.signals].sort((a, b) => {
+          const na = nodes[a.node], nb = nodes[b.node];
+          return Math.hypot(na.x - event.toX, na.y - event.toY) - Math.hypot(nb.x - event.toX, nb.y - event.toY);
+        })[0];
+        if (closest) closest.state = 'RED';
+        this.traffic = 'HEAVY';
+        this.metrics.mobility = clamp(this.metrics.mobility - 4, 18, 100);
+      }
+
+      if (event.id === 'grid-congestion' || event.id.endsWith('-road')) {
+        const edge = this.nearestEdge(event.toX, event.toY);
+        edge.capacity = Math.min(edge.capacity, 0.52);
+        edge.load = Math.max(edge.load, 1.35);
+        if (!d.affectedEdges.includes(edge.key)) d.affectedEdges.push(edge.key);
+        this.traffic = 'HEAVY';
+        this.metrics.mobility = clamp(this.metrics.mobility - 5, 18, 100);
+      }
+
+      if (event.id === 'grid-ems' || event.id.endsWith('-ems')) {
+        const responding = this.vehicles.filter((v) => v.kind === 'EMS' && v.status === 'RESPONDING');
+        responding.forEach((v) => {
+          v.etaSeconds *= 1.35;
+          v.trafficDelaySeconds = (v.trafficDelaySeconds ?? 0) + 180;
+        });
+        this.metrics.mobility = clamp(this.metrics.mobility - 3, 18, 100);
+      }
+
+      if (event.id === 'grid-hospital' || event.id.endsWith('-hospital')) {
+        const hospital = assets.find((a) => a.kind === 'HOSPITAL');
+        if (hospital) {
+          hospital.primary = clamp(hospital.primary + 14, 0, 100);
+          hospital.status = hospital.primary > 90 ? 'CRITICAL' : 'WARNING';
+          if (!d.affectedAssets.includes(hospital.id)) d.affectedAssets.push(hospital.id);
+        }
+        this.metrics.hospitalCapacity = clamp(this.metrics.hospitalCapacity + 9, 20, 100);
+        if (event.id === 'grid-hospital') {
+          this.runGridCascade(0.32, d.affectedAssets, d.failedAssets);
+          d.affectedAssets = Array.from(new Set(d.affectedAssets));
+          d.failedAssets = Array.from(new Set(d.failedAssets));
+        }
+      }
+    });
+  }
+
+  private advanceFloodSpread(d: DisasterState) {
+    const newlyFlooded: string[] = [];
+    edges.forEach((edge) => {
+      const arrival = d.floodArrivalMinuteByEdge[edge.key];
+      if (arrival === undefined || arrival > d.modelMinute) return;
+      const m = this.edgeMidpoint(edge);
+      const dist = Math.hypot(m.x - d.epicenterX, m.y - d.epicenterY);
+      const exposure = clamp(1 - dist / (d.radius * 1.18), 0.08, 1);
+      const drainage = 0.72 + this.seeded01(`drain-${edge.key}`) * 0.58;
+      const age = Math.max(0, d.modelMinute - arrival);
+      const depth = clamp(0.12 + age * 0.035 + exposure * 0.48 * drainage, 0.08, 1.15);
+      d.floodDepthByEdge[edge.key] = Math.max(d.floodDepthByEdge[edge.key] ?? 0, depth);
+      if (!d.affectedEdges.includes(edge.key)) {
+        d.affectedEdges.push(edge.key);
+        newlyFlooded.push(edge.key);
+      }
+      const risk = depth * d.severity * (edge.arterial ? 0.86 : 1.05);
+      edge.capacity = Math.min(edge.capacity, clamp(1 - risk * 0.92, 0.08, 0.9));
+      if (depth > 0.72 || edge.capacity < 0.2) edge.closedUntil = Math.max(edge.closedUntil, this.simSeconds + 3600);
+    });
+
+    assets.forEach((asset) => {
+      let exposure = 0;
+      d.affectedEdges.forEach((key) => {
+        const edge = edgeByKey(key);
+        if (!edge) return;
+        const m = this.edgeMidpoint(edge);
+        const dist = Math.hypot(asset.x - m.x, asset.y - m.y);
+        const depth = d.floodDepthByEdge[key] ?? 0;
+        exposure = Math.max(exposure, depth * clamp(1 - dist / 300, 0, 1));
+      });
+      const vuln = asset.kind === 'WATER' ? 1.15 : asset.kind === 'POWER' ? 1.0 : asset.kind === 'HOSPITAL' ? 0.65 : 0.75;
+      const risk = exposure * d.severity * vuln;
+      if (risk <= 0.18) return;
+      if (!d.affectedAssets.includes(asset.id)) d.affectedAssets.push(asset.id);
+      const damage: DamageSeverity = risk > 0.82 ? 'FAILED' : risk > 0.62 ? 'SEVERE' : risk > 0.38 ? 'MODERATE' : 'MINOR';
+      d.damageByAsset[asset.id] = damage;
+      asset.status = damage === 'FAILED' ? 'FAILED' : damage === 'SEVERE' ? 'CRITICAL' : damage === 'MODERATE' ? 'WARNING' : 'ELEVATED';
+      if (damage === 'FAILED' && asset.kind !== 'HOSPITAL' && !d.failedAssets.includes(asset.id)) d.failedAssets.push(asset.id);
+    });
+
+    if (newlyFlooded.length) {
+      this.algorithmTrace.push({
+        id: `flood-front-${Math.round(d.modelMinute)}`,
+        label: 'FLOOD FRONT',
+        algorithm: 'road-graph propagation × synthetic elevation/drainage cost',
+        output: `+${newlyFlooded.length} connected road segment(s) reached`,
+        tone: 'WARN',
+      });
+    }
+  }
+
+  private tickFireDynamics(dt: number) {
+    this.incidents.filter((i) => i.active && i.kind === 'FIRE').forEach((inc) => {
+      inc.elapsedSeconds = (inc.elapsedSeconds ?? 0) + dt;
+      const fireUnit = this.vehicles.find((v) => v.kind === 'FIRE' && v.targetIncident === inc.id);
+      const responseEta = fireUnit?.status === 'RESPONDING' ? fireUnit.etaSeconds : 0;
+      inc.responseEtaSeconds = responseEta;
+      inc.containment = inc.containment ?? 0;
+      inc.fireRadius = inc.fireRadius ?? 35;
+      inc.fireMaxRadius = inc.fireMaxRadius ?? 430;
+
+      if (fireUnit?.status === 'ON SCENE') {
+        inc.containment = clamp(inc.containment + dt * 0.055, 0, 1);
+        const suppression = 4.5 + inc.containment * 7.5;
+        inc.fireRadius = Math.max(28, inc.fireRadius - suppression * dt);
+      } else {
+        // A delayed fire appliance produces a visibly faster-growing fire.
+        const etaPenalty = clamp(responseEta / 420, 0, 1.4);
+        const trafficPenalty = this.traffic === 'GRIDLOCK' ? 0.45 : this.traffic === 'HEAVY' ? 0.22 : 0;
+        inc.fireGrowthRate = 6.5 + etaPenalty * 7.5 + trafficPenalty * 8;
+        inc.fireRadius = Math.min(inc.fireMaxRadius, inc.fireRadius + inc.fireGrowthRate * dt);
+      }
+
+      const ratio = inc.fireRadius / Math.max(1, inc.fireMaxRadius);
+      inc.severity = ratio > 0.72 ? 'SEVERE' : ratio > 0.34 ? 'MODERATE' : 'MINOR';
+
+      edges.forEach((edge) => {
+        const m = this.edgeMidpoint(edge);
+        const dist = Math.hypot(m.x - inc.x, m.y - inc.y);
+        if (dist > inc.fireRadius) return;
+        const heat = clamp(1 - dist / Math.max(35, inc.fireRadius), 0, 1);
+        edge.capacity = Math.min(edge.capacity, clamp(1 - heat * 0.62, 0.22, 1));
+      });
+
+      assets.forEach((asset) => {
+        const dist = Math.hypot(asset.x - inc.x, asset.y - inc.y);
+        if (dist > inc.fireRadius) return;
+        const heat = clamp(1 - dist / Math.max(35, inc.fireRadius), 0, 1);
+        if (heat > 0.68) asset.status = 'CRITICAL';
+        else if (heat > 0.34 && asset.status === 'NOMINAL') asset.status = 'WARNING';
+      });
+    });
   }
 
   private rerouteDisasterTraffic() {
@@ -1472,28 +1905,26 @@ export class CitySim {
     if (!this.disaster) return;
     const d = this.disaster;
     d.elapsedSeconds += dt;
-    if (d.elapsedSeconds > 6 && d.phase === 'ONSET') {
+    // Demo clock: one simulation second = one model minute. This keeps the
+    // causal chain observable in < 1 minute without pretending it is real-time.
+    d.modelMinute = d.elapsedSeconds;
+    this.refreshTimeline(d);
+    this.revealCascadeEvents(d);
+
+    if (d.modelMinute >= 5 && d.phase === 'ONSET') {
       d.phase = 'CASCADE';
       this.log('CASCADE PHASE // SECONDARY EFFECTS PROPAGATING', 'ALERT');
     }
+    if (d.modelMinute >= 15 && d.phase === 'CASCADE') d.phase = 'RESPONSE';
     this.disasterTickAccum += dt;
-    if (this.disasterTickAccum < 4) return;
+    if (this.disasterTickAccum < 1) return;
     this.disasterTickAccum = 0;
 
-    // Recompute traffic pressure and progressively propagate failures.
+    // Recompute traffic pressure and progressively propagate failures. Flood
+    // uses graph travel-time, not radius growth; earthquake damage was graded
+    // at onset and its network consequences emerge through cascade events.
     this.recomputeRoadLoads();
-    if ((d.kind === 'GRID CASCADE' || d.kind === 'COMPOUND') && d.phase === 'CASCADE') {
-      this.runGridCascade(0.24, d.affectedAssets, d.failedAssets);
-      d.affectedAssets = Array.from(new Set(d.affectedAssets));
-      d.failedAssets = Array.from(new Set(d.failedAssets));
-    }
-    if ((d.kind === 'FLOOD' || d.kind === 'COMPOUND') && d.phase === 'CASCADE') {
-      // flood front expands slightly; only already-exposed low-capacity roads continue degrading
-      edges.filter((e) => d.affectedEdges.includes(e.key) && e.capacity < 0.7).forEach((e) => {
-        e.capacity = clamp(e.capacity - 0.025 * d.severity, 0.08, 1);
-        if (e.capacity < 0.18) e.closedUntil = Math.max(e.closedUntil, this.simSeconds + 3600);
-      });
-    }
+    if (d.kind === 'FLOOD' || d.kind === 'COMPOUND') this.advanceFloodSpread(d);
     this.rerouteDisasterTraffic();
     this.recalculateDisasterMetrics();
   }
@@ -1629,6 +2060,7 @@ export class CitySim {
       if (this.autoTime) this.applyTimeTraffic();
     }
     this.tickDisaster(d);
+    this.tickFireDynamics(d);
 
     const factor = this.speedFactor();
     const activePeds = this.pedestrianActive();

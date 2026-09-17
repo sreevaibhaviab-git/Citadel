@@ -9,6 +9,7 @@ import {
 } from './config';
 import type { CitySim } from './sim';
 import type { Vehicle } from './types';
+import { dependencyRelations } from './dependencies';
 
 const C = () => window.Cesium;
 
@@ -301,7 +302,13 @@ export function buildWorld(viewer: any, sim: CitySim): World {
       id: `asset-${a.id}`,
       position: pos(a.x, a.y, 0),
       point: {
-        pixelSize: new Cesium.CallbackProperty(() => a.status === 'FAILED' ? 14 : a.status === 'CRITICAL' ? 12 : 9, false),
+        pixelSize: new Cesium.CallbackProperty(() => {
+          const dep = sim.dependencyAnalysis();
+          if (dep?.sourceAssetId === a.id) return 17;
+          const hit = dep?.affected.find((n) => n.assetId === a.id);
+          if (hit) return hit.depth === 1 ? 15 : 12;
+          return a.status === 'FAILED' ? 14 : a.status === 'CRITICAL' ? 12 : 9;
+        }, false),
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
         color: new Cesium.CallbackProperty(() => {
           if (a.status === 'FAILED') return css('#ff3d32', 1);
@@ -310,13 +317,29 @@ export function buildWorld(viewer: any, sim: CitySim): World {
           if (a.status === 'WARNING') return css('#dfbf55', 1);
           return css(colour, 0.95);
         }, false),
-        outlineColor: new Cesium.CallbackProperty(() => a.status === 'FAILED' ? css('#ffffff', 0.9) : css('#000000', 0.6), false),
-        outlineWidth: new Cesium.CallbackProperty(() => a.status === 'FAILED' ? 3 : 2, false),
+        outlineColor: new Cesium.CallbackProperty(() => {
+          const dep = sim.dependencyAnalysis();
+          if (dep?.sourceAssetId === a.id) return css('#ffffff', 1);
+          const hit = dep?.affected.find((n) => n.assetId === a.id);
+          if (hit) return css(hit.hiddenPath ? '#c989ff' : hit.depth === 1 ? '#58e6ff' : '#7e9dff', 1);
+          return a.status === 'FAILED' ? css('#ffffff', 0.9) : css('#000000', 0.6);
+        }, false),
+        outlineWidth: new Cesium.CallbackProperty(() => {
+          const dep = sim.dependencyAnalysis();
+          if (dep?.sourceAssetId === a.id || dep?.affected.some((n) => n.assetId === a.id)) return 4;
+          return a.status === 'FAILED' ? 3 : 2;
+        }, false),
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
       label: {
         text: new Cesium.CallbackProperty(
-          () => `${a.id} // ${a.status === 'FAILED' ? 'FAILED' : a.status === 'RECOVERING' ? 'RECOVERING' : `${Math.round(a.primary)}%`}`,
+          () => {
+            const dep = sim.dependencyAnalysis();
+            if (dep?.sourceAssetId === a.id) return `${a.id} // TRACE SOURCE`;
+            const hit = dep?.affected.find((n) => n.assetId === a.id);
+            if (hit) return `${a.id} // D${hit.depth}${hit.hiddenPath ? ' // HIDDEN' : ''}`;
+            return `${a.id} // ${a.status === 'FAILED' ? 'FAILED' : a.status === 'RECOVERING' ? 'RECOVERING' : `${Math.round(a.primary)}%`}`;
+          },
           false
         ),
         font: '11px "JetBrains Mono", monospace',
@@ -337,31 +360,64 @@ export function buildWorld(viewer: any, sim: CitySim): World {
     }));
   });
 
-  /* ---- dependency links ---- */
-  const dependencyPairs: [string, string][] = [
-    ['P2', 'H1'],
-    ['P2', 'W1'],
-    ['P1', 'H2'],
-    ['P3', 'H2'],
-    ['W1', 'H1'],
-    ['P2', 'T1'],
-  ];
-  const dependencyEnts = dependencyPairs.map(([from, to]) => {
-    const a = assets.find((x) => x.id === from)!;
-    const b = assets.find((x) => x.id === to)!;
+  /* ---- dependency intelligence links ---- */
+  const dependencyEnts = dependencyRelations.map((rel) => {
+    const a = assets.find((x) => x.id === rel.from)!;
+    const b = assets.find((x) => x.id === rel.to)!;
     return ents.add({
-      id: `dep-${from}-${to}`,
+      id: `dep-${rel.id}`,
       polyline: {
-        positions: [pos(a.x, a.y, 80), pos(b.x, b.y, 80)],
-        width: 1.5,
+        positions: [pos(a.x, a.y, 90), pos(b.x, b.y, 90)],
+        width: 2,
         material: new Cesium.PolylineDashMaterialProperty({
-          color: css('#6f8598', 0.7),
-          dashLength: 14,
+          color: css(rel.hidden ? '#c989ff' : rel.backup ? '#55d69a' : '#58e6ff', rel.hidden ? 0.88 : 0.78),
+          dashLength: rel.hidden ? 8 : rel.backup ? 18 : 12,
         }),
       },
+      properties: { kind: 'DEPENDENCY', relationId: rel.id },
       show: false,
     });
   });
+
+  const alternativeEnts = new Map<string, any>();
+  function syncDependencyAlternatives() {
+    const analysis = sim.dependencyAnalysis();
+    const desired = new Set<string>();
+    if (analysis && sim.layers.DEPENDENCIES) {
+      analysis.alternatives.forEach((alt) => {
+        if (!alt.replacementAssetId) return;
+        const from = assets.find((a) => a.id === alt.replacementAssetId);
+        const to = assets.find((a) => a.id === alt.targetAssetId);
+        if (!from || !to) return;
+        desired.add(alt.id);
+        let ent = alternativeEnts.get(alt.id);
+        if (!ent) {
+          ent = ents.add({
+            id: `dep-alt-${alt.id}`,
+            polyline: {
+              positions: [pos(from.x, from.y, 110), pos(to.x, to.y, 110)],
+              width: 3,
+              material: new Cesium.PolylineDashMaterialProperty({ color: css('#55d69a', 0.95), dashLength: 22 }),
+            },
+            label: {
+              text: 'BACKUP',
+              font: '10px "JetBrains Mono", monospace',
+              fillColor: css('#75efb2', .95),
+              showBackground: true,
+              backgroundColor: css('#04110b', .78),
+              pixelOffset: new Cesium.Cartesian2(0, -10),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+            position: pos((from.x + to.x) / 2, (from.y + to.y) / 2, 120),
+            show: true,
+          });
+          alternativeEnts.set(alt.id, ent);
+        }
+        ent.show = true;
+      });
+    }
+    alternativeEnts.forEach((ent, id) => { if (!desired.has(id)) ent.show = false; });
+  }
 
   /* ---- vehicles ---- */
   const GROUND_VEHICLE =
@@ -649,52 +705,130 @@ export function buildWorld(viewer: any, sim: CitySim): World {
     if (Number.isFinite(lat) && Number.isFinite(lon)) void sim.probeMapPoint(lat, lon, 15);
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
+  // Cesium's normal scene.pick can miss clamped-to-ground polylines when a
+  // photorealistic 3D tile sits underneath them.  Road hover therefore uses
+  // two passes: drill-pick first, then a screen-space proximity fallback.
+  const pointToSegmentPx = (px: number, py: number, ax: number, ay: number, bx: number, by: number) => {
+    const abx = bx - ax; const aby = by - ay;
+    const len2 = abx * abx + aby * aby;
+    if (len2 <= 0.0001) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / len2));
+    const x = ax + t * abx; const y = ay + t * aby;
+    return Math.hypot(px - x, py - y);
+  };
+
+  const toScreen = (lon: number, lat: number) => {
+    try {
+      const world = Cesium.Cartesian3.fromDegrees(lon, lat, 3);
+      return viewer.scene.cartesianToCanvasCoordinates(world, new Cesium.Cartesian2());
+    } catch {
+      return undefined;
+    }
+  };
+
+  const showLiveHover = (sampleId: string, screen: any) => {
+    const sample = sim.liveTrafficSample(sampleId);
+    if (!sample) return false;
+    const coords = sample.coordinates;
+    const mid = coords[Math.floor(coords.length / 2)] ?? { lat: sample.lat, lon: sample.lon };
+    const free = Math.max(1, sample.freeFlowSpeedKmh);
+    sim.setRoadHover({
+      kind: 'LIVE', id: sample.id, label: `LIVE ROAD // ${sample.id}`,
+      screenX: screen.x, screenY: screen.y,
+      lat: mid.lat, lon: mid.lon,
+      currentSpeedKmh: sample.currentSpeedKmh,
+      freeFlowSpeedKmh: sample.freeFlowSpeedKmh,
+      congestionPct: Math.max(0, Math.min(100, (1 - sample.currentSpeedKmh / free) * 100)),
+      vehicleCount: sample.estimatedVehicleCount,
+      vehicleCountLabel: 'ESTIMATED', source: 'TOMTOM LIVE',
+    });
+    return true;
+  };
+
+  const showModelHover = (edgeKey: string, screen: any) => {
+    const edge = edges.find((e) => e.key === edgeKey);
+    const road = sim.snapshot().roads.find((r) => r.key === edgeKey);
+    if (!edge || !road) return false;
+    const a = nodes[edge.a], b = nodes[edge.b];
+    const [lon, lat] = toLonLat((a.x + b.x) / 2, (a.y + b.y) / 2);
+    sim.setRoadHover({
+      kind: 'MODEL', id: road.key, label: `${road.corridor} // ${road.key}`,
+      screenX: screen.x, screenY: screen.y,
+      lat, lon,
+      currentSpeedKmh: road.currentSpeedKmh,
+      freeFlowSpeedKmh: road.freeFlowSpeedKmh,
+      congestionPct: road.congestionPct,
+      vehicleCount: road.modelVehicleCount,
+      vehicleCountLabel: 'MODELLED', source: road.source === 'LIVE+MODEL' ? 'TOMTOM CALIBRATED' : 'CITADEL MODEL',
+    });
+    return true;
+  };
+
+  const nearestRoadAtScreen = (screen: any) => {
+    const px = screen.x; const py = screen.y;
+    let best: { kind: 'LIVE' | 'MODEL'; id: string; d: number } | null = null;
+
+    // Prefer live TomTom geometry whenever it is visible / available.
+    for (const sample of sim.liveTraffic.samples) {
+      if (!sample.coordinates || sample.coordinates.length < 2) continue;
+      for (let i = 0; i < sample.coordinates.length - 1; i++) {
+        const a = toScreen(sample.coordinates[i].lon, sample.coordinates[i].lat);
+        const b = toScreen(sample.coordinates[i + 1].lon, sample.coordinates[i + 1].lat);
+        if (!a || !b) continue;
+        const d = pointToSegmentPx(px, py, a.x, a.y, b.x, b.y);
+        if (d <= 16 && (!best || d < best.d)) best = { kind: 'LIVE', id: sample.id, d };
+      }
+    }
+
+    // Synthetic/model roads remain hoverable too, especially when live traffic
+    // is temporarily unavailable.
+    for (const edge of edges) {
+      const aNode = nodes[edge.a]; const bNode = nodes[edge.b];
+      const [aLon, aLat] = toLonLat(aNode.x, aNode.y);
+      const [bLon, bLat] = toLonLat(bNode.x, bNode.y);
+      const a = toScreen(aLon, aLat); const b = toScreen(bLon, bLat);
+      if (!a || !b) continue;
+      const d = pointToSegmentPx(px, py, a.x, a.y, b.x, b.y);
+      if (d <= 12 && (!best || d < best.d)) best = { kind: 'MODEL', id: edge.key, d };
+    }
+    return best;
+  };
+
   handler.setInputAction((movement: any) => {
-    const picked = viewer.scene.pick(movement.endPosition);
-    const props = picked?.id?.properties;
-    if (!props) { sim.setRoadHover(null); return; }
-    const kind = props.kind?.getValue();
+    const screen = movement.endPosition;
 
-    if (kind === 'LIVE_TRAFFIC_ROAD') {
-      const sampleId = props.sampleId.getValue();
-      const sample = sim.liveTrafficSample(sampleId);
-      if (!sample) { sim.setRoadHover(null); return; }
-      const coords = sample.coordinates;
-      const mid = coords[Math.floor(coords.length / 2)] ?? { lat: sample.lat, lon: sample.lon };
-      const free = Math.max(1, sample.freeFlowSpeedKmh);
-      sim.setRoadHover({
-        kind: 'LIVE', id: sample.id, label: `LIVE ROAD // ${sample.id}`,
-        screenX: movement.endPosition.x, screenY: movement.endPosition.y,
-        lat: mid.lat, lon: mid.lon,
-        currentSpeedKmh: sample.currentSpeedKmh,
-        freeFlowSpeedKmh: sample.freeFlowSpeedKmh,
-        congestionPct: Math.max(0, Math.min(100, (1 - sample.currentSpeedKmh / free) * 100)),
-        vehicleCount: sample.estimatedVehicleCount,
-        vehicleCountLabel: 'ESTIMATED', source: 'TOMTOM LIVE',
-      });
+    // PASS 1: drill through the 3D tiles so a road primitive under a building
+    // facade can still be discovered.
+    try {
+      const picks = viewer.scene.drillPick(screen, 12) ?? [];
+      for (const picked of picks) {
+        const props = picked?.id?.properties;
+        if (!props) continue;
+        const kind = props.kind?.getValue();
+        if (kind === 'LIVE_TRAFFIC_ROAD' && showLiveHover(props.sampleId.getValue(), screen)) {
+          viewer.canvas.style.cursor = 'crosshair';
+          return;
+        }
+        if (kind === 'ROAD' && showModelHover(props.edgeKey.getValue(), screen)) {
+          viewer.canvas.style.cursor = 'crosshair';
+          return;
+        }
+      }
+    } catch {}
+
+    // PASS 2: screen-space nearest-segment test. This makes hover reliable even
+    // when Cesium refuses to pick a clamped GroundPolylinePrimitive.
+    const nearest = nearestRoadAtScreen(screen);
+    if (nearest?.kind === 'LIVE' && showLiveHover(nearest.id, screen)) {
+      viewer.canvas.style.cursor = 'crosshair';
+      return;
+    }
+    if (nearest?.kind === 'MODEL' && showModelHover(nearest.id, screen)) {
+      viewer.canvas.style.cursor = 'crosshair';
       return;
     }
 
-    if (kind === 'ROAD') {
-      const edgeKey = props.edgeKey.getValue();
-      const edge = edges.find((e) => e.key === edgeKey);
-      const road = sim.snapshot().roads.find((r) => r.key === edgeKey);
-      if (!edge || !road) { sim.setRoadHover(null); return; }
-      const a = nodes[edge.a], b = nodes[edge.b];
-      const [lon, lat] = toLonLat((a.x + b.x) / 2, (a.y + b.y) / 2);
-      sim.setRoadHover({
-        kind: 'MODEL', id: road.key, label: `${road.corridor} // ${road.key}`,
-        screenX: movement.endPosition.x, screenY: movement.endPosition.y,
-        lat, lon,
-        currentSpeedKmh: road.currentSpeedKmh,
-        freeFlowSpeedKmh: road.freeFlowSpeedKmh,
-        congestionPct: road.congestionPct,
-        vehicleCount: road.modelVehicleCount,
-        vehicleCountLabel: 'MODELLED', source: road.source === 'LIVE+MODEL' ? 'TOMTOM CALIBRATED' : 'CITADEL MODEL',
-      });
-      return;
-    }
-
+    viewer.canvas.style.cursor = '';
     sim.setRoadHover(null);
   }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
@@ -850,11 +984,28 @@ export function buildWorld(viewer: any, sim: CitySim): World {
     roadLabelEnts.forEach((e, i) => (e.show = L.TRAFFIC && sim.selectedId === `ROAD:${edges[i].key}`));
     liveTrafficEnts.forEach((e) => (e.show = L.TRAFFIC && sim.dataMode === 'LIVE' && sim.liveTraffic.connected));
     signalEnts.forEach((e) => (e.show = L.TRAFFIC));
-    dependencyEnts.forEach((e) => (e.show = L.DEPENDENCIES));
+    const depAnalysis = sim.dependencyAnalysis();
+    const activeRelIds = new Set(depAnalysis?.relations.map((r) => r.id) ?? []);
+    dependencyEnts.forEach((e, i) => {
+      const rel = dependencyRelations[i];
+      const active = !!depAnalysis && activeRelIds.has(rel.id);
+      e.show = L.DEPENDENCIES && active;
+      if (active) {
+        const direct = rel.from === depAnalysis!.sourceAssetId;
+        e.polyline.width = direct ? 4 : rel.hidden ? 3.2 : 2.4;
+        e.polyline.material = rel.hidden
+          ? new Cesium.PolylineDashMaterialProperty({ color: css('#c989ff', .98), dashLength: 8 })
+          : rel.backup
+          ? new Cesium.PolylineDashMaterialProperty({ color: css('#55d69a', .98), dashLength: 20 })
+          : new Cesium.PolylineGlowMaterialProperty({ color: css(direct ? '#58e6ff' : '#7e9dff', .96), glowPower: direct ? .18 : .08 });
+      }
+    });
+    syncDependencyAlternatives();
     const activePeds = sim.pedestrianActive();
     pedEnts.forEach((e, i) => (e.show = L.POPULATION && i < activePeds));
+    const tracedAssets = new Set<string>([...(depAnalysis ? [depAnalysis.sourceAssetId] : []), ...(depAnalysis?.affected.map((n) => n.assetId) ?? [])]);
     assetEnts.forEach((e, i) => {
-      e.show = L[assets[i].layer] !== false;
+      e.show = L[assets[i].layer] !== false || (L.DEPENDENCIES && tracedAssets.has(assets[i].id));
     });
     sim.liveFacilities.forEach((f) => {
       const e = facilityEnts.get(f.id);
@@ -920,27 +1071,59 @@ export function buildWorld(viewer: any, sim: CitySim): World {
     });
   }
 
-  function flyToLonLat(lon: number, lat: number, range = 950) {
+  function flyToLonLat(lon: number, lat: number, range = 2200) {
+    const targetLon = Number(lon);
+    const targetLat = Number(lat);
+    if (!Number.isFinite(targetLon) || !Number.isFinite(targetLat) || viewer.isDestroyed()) return;
+
+    // Release any vehicle-follow / previous camera animation before location search.
     sim.follow(null);
+    viewer.trackedEntity = undefined;
+    viewer.camera.cancelFlight();
     viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
-    if (viewMode === '2D') {
+
+    const doFly = () => {
+      if (viewer.isDestroyed()) return;
+
+      // In 2D, fly to a rectangle around the searched place. Using a Cartesian
+      // altitude in 2D can look like the camera did not move at all.
+      if (viewMode === '2D' || viewer.scene.mode === Cesium.SceneMode.SCENE2D) {
+        const dLon = 0.012;
+        const dLat = 0.009;
+        viewer.camera.flyTo({
+          destination: Cesium.Rectangle.fromDegrees(
+            targetLon - dLon,
+            targetLat - dLat,
+            targetLon + dLon,
+            targetLat + dLat
+          ),
+          duration: 1.45,
+          easingFunction: Cesium.EasingFunction.CUBIC_OUT,
+        });
+        return;
+      }
+
       viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(lon, lat, Math.max(1800, range * 2.2)),
-        duration: 1.1,
+        destination: Cesium.Cartesian3.fromDegrees(targetLon, targetLat, Math.max(1800, range)),
+        orientation: {
+          heading: Cesium.Math.toRadians(8),
+          pitch: Cesium.Math.toRadians(-58),
+          roll: 0,
+        },
+        duration: 1.6,
         easingFunction: Cesium.EasingFunction.CUBIC_OUT,
       });
+    };
+
+    // If the user searched while Cesium was still morphing between map modes,
+    // wait for the scene to become stable and then execute the flight.
+    if (viewMode === '3D' && viewer.scene.mode !== Cesium.SceneMode.SCENE3D) {
+      viewer.scene.morphTo3D(0.35);
+      window.setTimeout(doFly, 420);
       return;
     }
-    viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(lon, lat, range),
-      orientation: {
-        heading: Cesium.Math.toRadians(18),
-        pitch: Cesium.Math.toRadians(-42),
-        roll: 0,
-      },
-      duration: 1.25,
-      easingFunction: Cesium.EasingFunction.CUBIC_OUT,
-    });
+
+    window.requestAnimationFrame(doFly);
   }
 
   function setViewMode(mode: '2D' | '3D') {

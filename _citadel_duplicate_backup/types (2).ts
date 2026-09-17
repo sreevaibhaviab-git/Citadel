@@ -57,11 +57,16 @@ export interface LiveTrafficState {
 
 export interface LiveFacility {
   id: string;
-  kind: 'HOSPITAL' | 'FIRE' | 'POLICE' | 'SAFE';
+  kind: 'HOSPITAL' | 'FIRE' | 'POLICE' | 'SAFE' | 'POWER' | 'WATER' | 'METRO';
   name: string;
   lat: number;
   lon: number;
   source: string;
+  operator?: string;
+  ref?: string;
+  network?: string;
+  osmType?: string;
+  osmId?: string;
 }
 
 
@@ -128,6 +133,7 @@ export type TrafficMode = 'LIGHT' | 'NORMAL' | 'HEAVY' | 'GRIDLOCK';
 export type TimePreset = 'DAY' | 'SUNSET' | 'NIGHT';
 export type SignalState = 'GREEN' | 'AMBER' | 'RED' | 'PRIORITY';
 export type DisasterKind = 'FLOOD' | 'EARTHQUAKE' | 'GRID CASCADE' | 'COMPOUND';
+export type PlaceableHazardKind = 'FLOOD' | 'EARTHQUAKE' | 'FIRE';
 export type ScenarioPhase = 'IDLE' | 'ONSET' | 'CASCADE' | 'RESPONSE' | 'RECOVERY';
 
 export type LayerKey =
@@ -228,6 +234,56 @@ export interface Asset {
   layer: LayerKey;
 }
 
+
+export type DependencyCategory = 'POWER' | 'WATER' | 'ACCESS' | 'EMERGENCY' | 'OPERATIONAL' | 'BACKUP';
+
+export interface DependencyRelation {
+  id: string;
+  from: string;
+  to: string;
+  category: DependencyCategory;
+  label: string;
+  strength: number;
+  confidence: number;
+  hidden: boolean;
+  inferred: boolean;
+  backup?: boolean;
+  description: string;
+}
+
+export interface DependencyImpactNode {
+  assetId: string;
+  depth: number;
+  path: string[];
+  relationIds: string[];
+  hiddenPath: boolean;
+  consequence: string;
+}
+
+export interface DependencyAlternative {
+  id: string;
+  targetAssetId: string;
+  replacementAssetId?: string;
+  type: 'ALTERNATE CONNECTION' | 'BACKUP SYSTEM' | 'MUTUAL AID';
+  label: string;
+  confidence: number;
+  description: string;
+}
+
+export interface DependencyAnalysis {
+  sourceAssetId: string;
+  direct: DependencyImpactNode[];
+  indirect: DependencyImpactNode[];
+  affected: DependencyImpactNode[];
+  relations: DependencyRelation[];
+  hiddenRelations: DependencyRelation[];
+  alternatives: DependencyAlternative[];
+  consequences: string[];
+  cascadeRisk: number;
+  estimatedPeopleAffected: number;
+  algorithm: string;
+}
+
 export type VehicleKind = 'CAR' | 'BUS' | 'TRUCK' | 'EMS' | 'FIRE' | 'POLICE';
 
 export interface Vehicle {
@@ -300,6 +356,14 @@ export interface Incident {
   assignedUnit?: string;
   corridor: number[];
   active: boolean;
+  // Dynamic fire behaviour. These fields are optional so ordinary traffic /
+  // utility incidents remain lightweight.
+  elapsedSeconds?: number;
+  fireRadius?: number;
+  fireMaxRadius?: number;
+  fireGrowthRate?: number;
+  responseEtaSeconds?: number;
+  containment?: number;
 }
 
 export interface FeedLine {
@@ -365,6 +429,30 @@ export interface RecoveryStep {
   completed: boolean;
 }
 
+export type DamageSeverity = 'NONE' | 'MINOR' | 'MODERATE' | 'SEVERE' | 'FAILED';
+
+export interface HazardTimelineStage {
+  minute: number;
+  label: string;
+  detail: string;
+  state: 'PENDING' | 'ACTIVE' | 'COMPLETE';
+}
+
+export interface CascadePropagationEvent {
+  id: string;
+  minute: number;
+  label: string;
+  detail: string;
+  tone: 'INFO' | 'WARN' | 'ALERT' | 'OK';
+  revealed: boolean;
+  fromX: number;
+  fromY: number;
+  fromLabel: string;
+  toX: number;
+  toY: number;
+  toLabel: string;
+}
+
 export interface DisasterState {
   id: string;
   kind: DisasterKind;
@@ -384,6 +472,18 @@ export interface DisasterState {
   exposedPopulation: number;
   confidence: number;
   scenarioLabel: string;
+  // Scenario time is deliberately accelerated for the demo: one simulation
+  // second represents one model minute. The UI labels this explicitly.
+  modelMinute: number;
+  timeline: HazardTimelineStage[];
+  // Flood propagation follows the road graph and a deterministic synthetic
+  // drainage/elevation proxy instead of drawing one circular flood disk.
+  floodArrivalMinuteByEdge: Record<string, number>;
+  floodDepthByEdge: Record<string, number>;
+  // Earthquake damage stores different severity classes per asset.
+  damageByAsset: Record<string, DamageSeverity>;
+  // Sequential cross-system effects rendered as animated dependency lines.
+  cascadeEvents: CascadePropagationEvent[];
 }
 
 export interface Snapshot {
@@ -413,4 +513,6 @@ export interface Snapshot {
   responsePlan: ResponsePlan | null;
   mapProbe: MapProbeState | null;
   roadHover: RoadHoverState | null;
+  dependencyAnalysis: DependencyAnalysis | null;
+  hazardPlacement: PlaceableHazardKind | null;
 }

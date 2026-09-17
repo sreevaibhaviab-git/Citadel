@@ -8,6 +8,8 @@ function Metric({ label, value, tone = '' }: { label: string; value: string | nu
   return <div className="inspector-metric"><span>{label}</span><b className={tone}>{value}</b></div>;
 }
 
+const assetName = (id: string) => assetById(id)?.name ?? id;
+
 export default function InspectorDock({ sim, snap }: { sim: CitySim; snap: Snapshot }) {
   const asset = snap.selectedId ? assetById(snap.selectedId) : undefined;
   const unit = snap.vehicles.find((v) => v.id === snap.selectedId);
@@ -16,6 +18,7 @@ export default function InspectorDock({ sim, snap }: { sim: CitySim; snap: Snaps
   const liveRoadId = snap.selectedId?.startsWith('LIVE_TRAFFIC:') ? snap.selectedId.slice('LIVE_TRAFFIC:'.length) : null;
   const liveRoad = liveRoadId ? snap.liveOps.traffic.samples.find((r) => r.id === liveRoadId) : undefined;
   const probe = snap.selectedId?.startsWith('MAP:') ? snap.mapProbe : null;
+  const dep = asset ? snap.dependencyAnalysis : null;
   if (!asset && !unit && !road && !liveRoad && !probe) return null;
 
   return (
@@ -32,8 +35,9 @@ export default function InspectorDock({ sim, snap }: { sim: CitySim; snap: Snaps
         <div className="dock-scroll">
           <section className="inspect-hero">
             <div className="inspect-name">{asset.name}</div>
-            <div className="inspect-class">{asset.kind} // SIMULATED OPERATIONAL OBJECT</div>
+            <div className="inspect-class">{asset.kind} // INFRASTRUCTURE OBJECT</div>
           </section>
+
           <section className="dock-section">
             <div className="dock-section-title">CURRENT STATE</div>
             <Metric label="STATUS" value={asset.status} tone={asset.status === 'CRITICAL' ? 'tone-alert' : asset.status === 'WARNING' ? 'tone-warn' : 'tone-ok'} />
@@ -41,14 +45,68 @@ export default function InspectorDock({ sim, snap }: { sim: CitySim; snap: Snaps
             <div className="metric-track"><i style={{ width: `${Math.min(100, Math.max(0, asset.primary))}%` }} /></div>
             <Metric label="LAYER" value={asset.layer} />
           </section>
+
+          {dep && (<>
+            <section className="dock-section">
+              <div className="dock-section-title">DEPENDENCY INTELLIGENCE</div>
+              <Metric label="DIRECT DEPENDENTS" value={dep.direct.length} />
+              <Metric label="INDIRECT DEPENDENTS" value={dep.indirect.length} />
+              <Metric label="HIDDEN RELATIONSHIPS" value={dep.hiddenRelations.length} tone={dep.hiddenRelations.length ? 'tone-warn' : ''} />
+              <Metric label="CASCADE RISK" value={`${dep.cascadeRisk}/100`} tone={dep.cascadeRisk >= 75 ? 'tone-alert' : dep.cascadeRisk >= 50 ? 'tone-warn' : 'tone-ok'} />
+              <Metric label="MODELLED PEOPLE EXPOSED" value={dep.estimatedPeopleAffected.toLocaleString()} />
+              <p className="dock-note mt-2">{dep.algorithm}</p>
+            </section>
+
+            <section className="dock-section">
+              <div className="dock-section-title">IF {asset.id} IS LOST</div>
+              {dep.consequences.slice(0, 6).map((text, i) => (
+                <div className="provenance-line" key={`c-${i}`}><span>{String(i + 1).padStart(2, '0')}</span><b>{text}</b></div>
+              ))}
+            </section>
+
+            <section className="dock-section">
+              <div className="dock-section-title">DEPENDENCY CHAIN</div>
+              {dep.direct.map((n) => (
+                <div className="provenance-line" key={`d-${n.assetId}`}><span>DIRECT // D1</span><b>{n.assetId} · {assetName(n.assetId)}</b></div>
+              ))}
+              {dep.indirect.slice(0, 7).map((n) => (
+                <div className="provenance-line" key={`i-${n.assetId}`}><span>INDIRECT // D{n.depth}</span><b>{n.assetId} · {assetName(n.assetId)}</b></div>
+              ))}
+              {!dep.affected.length && <p className="dock-note">No downstream assets found in the current model.</p>}
+            </section>
+
+            {!!dep.hiddenRelations.length && (
+              <section className="dock-section">
+                <div className="dock-section-title">HIDDEN RELATIONSHIPS DISCOVERED</div>
+                {dep.hiddenRelations.slice(0, 6).map((r) => (
+                  <div key={r.id} className="mb-2">
+                    <div className="provenance-line"><span>{r.from} → {r.to}</span><b className="sim">{Math.round(r.confidence * 100)}% CONF.</b></div>
+                    <p className="dock-note">{r.label} // {r.description}</p>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            <section className="dock-section">
+              <div className="dock-section-title">BACKUPS + ALTERNATIVE CONNECTIONS</div>
+              {dep.alternatives.length ? dep.alternatives.map((a) => (
+                <div key={a.id} className="mb-2">
+                  <div className="provenance-line"><span>{a.type}</span><b>{a.label}</b></div>
+                  <p className="dock-note">{a.description}</p>
+                </div>
+              )) : <p className="dock-note">No alternate connection found in the current model.</p>}
+            </section>
+          </>)}
+
           <section className="dock-section">
             <div className="dock-section-title">MODEL TRACE</div>
-            <div className="provenance-line"><span>GEOGRAPHIC CONTEXT</span><b>REAL</b></div>
-            <div className="provenance-line"><span>OPERATIONAL VALUE</span><b className="sim">SIMULATED</b></div>
-            <div className="provenance-line"><span>SCENARIO STATE</span><b className="sim">MODEL</b></div>
+            <div className="provenance-line"><span>GEOGRAPHIC CONTEXT</span><b>REAL / STREAMED</b></div>
+            <div className="provenance-line"><span>DEPENDENCY NETWORK</span><b className="sim">MODEL + INFERENCE</b></div>
+            <div className="provenance-line"><span>HIDDEN LINKS</span><b className="sim">INFERRED</b></div>
           </section>
+
           <section className="dock-section">
-            <button className="full-action" onClick={() => sim.toggleLayer('DEPENDENCIES')}>TRACE DEPENDENCIES</button>
+            <button className="full-action" onClick={() => sim.traceAssetDependencies(asset.id)}>DISCOVER + TRACE DEPENDENCIES</button>
           </section>
         </div>
       )}

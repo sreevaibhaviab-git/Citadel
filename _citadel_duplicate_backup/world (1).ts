@@ -920,27 +920,59 @@ export function buildWorld(viewer: any, sim: CitySim): World {
     });
   }
 
-  function flyToLonLat(lon: number, lat: number, range = 950) {
+  function flyToLonLat(lon: number, lat: number, range = 2200) {
+    const targetLon = Number(lon);
+    const targetLat = Number(lat);
+    if (!Number.isFinite(targetLon) || !Number.isFinite(targetLat) || viewer.isDestroyed()) return;
+
+    // Release any vehicle-follow / previous camera animation before location search.
     sim.follow(null);
+    viewer.trackedEntity = undefined;
+    viewer.camera.cancelFlight();
     viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
-    if (viewMode === '2D') {
+
+    const doFly = () => {
+      if (viewer.isDestroyed()) return;
+
+      // In 2D, fly to a rectangle around the searched place. Using a Cartesian
+      // altitude in 2D can look like the camera did not move at all.
+      if (viewMode === '2D' || viewer.scene.mode === Cesium.SceneMode.SCENE2D) {
+        const dLon = 0.012;
+        const dLat = 0.009;
+        viewer.camera.flyTo({
+          destination: Cesium.Rectangle.fromDegrees(
+            targetLon - dLon,
+            targetLat - dLat,
+            targetLon + dLon,
+            targetLat + dLat
+          ),
+          duration: 1.45,
+          easingFunction: Cesium.EasingFunction.CUBIC_OUT,
+        });
+        return;
+      }
+
       viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(lon, lat, Math.max(1800, range * 2.2)),
-        duration: 1.1,
+        destination: Cesium.Cartesian3.fromDegrees(targetLon, targetLat, Math.max(1800, range)),
+        orientation: {
+          heading: Cesium.Math.toRadians(8),
+          pitch: Cesium.Math.toRadians(-58),
+          roll: 0,
+        },
+        duration: 1.6,
         easingFunction: Cesium.EasingFunction.CUBIC_OUT,
       });
+    };
+
+    // If the user searched while Cesium was still morphing between map modes,
+    // wait for the scene to become stable and then execute the flight.
+    if (viewMode === '3D' && viewer.scene.mode !== Cesium.SceneMode.SCENE3D) {
+      viewer.scene.morphTo3D(0.35);
+      window.setTimeout(doFly, 420);
       return;
     }
-    viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(lon, lat, range),
-      orientation: {
-        heading: Cesium.Math.toRadians(18),
-        pitch: Cesium.Math.toRadians(-42),
-        roll: 0,
-      },
-      duration: 1.25,
-      easingFunction: Cesium.EasingFunction.CUBIC_OUT,
-    });
+
+    window.requestAnimationFrame(doFly);
   }
 
   function setViewMode(mode: '2D' | '3D') {

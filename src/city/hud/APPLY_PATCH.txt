@@ -1,0 +1,29 @@
+CITADEL PATCH 01 — MAIN INTERACTION FEATURES
+
+Replace these existing files in your project:
+  src/city/CityView.tsx
+  src/city/config.ts
+  src/city/live.ts
+  src/city/sim.ts
+  src/city/types.ts
+  src/city/world.ts
+
+Add these new files:
+  src/city/hud/LocationSearch.tsx
+  src/city/hud/RoadHoverCard.tsx
+
+Then run:
+  npm run build
+  npm run dev
+
+Git checkpoint:
+  git add src/city
+  git commit -m "Add location search road hover intelligence and live emergency routing"
+  git push
+
+What this patch adds:
+- Bengaluru location/road/POI search using Nominatim.
+- Hover any CITADEL or live TomTom road for a floating glass road card.
+- Card shows speed, free flow, congestion, estimated/modelled cars, and nearby hospitals/police/fire within 5 km.
+- Emergency vehicles use TomTom traffic-aware routing in LIVE mode and follow returned real road geometry.
+- If routing is unavailable, the existing CITADEL Dijkstra route remains the fallback.

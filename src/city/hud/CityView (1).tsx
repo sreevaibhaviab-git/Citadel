@@ -87,6 +87,13 @@ export default function CityView() {
   }, [snap.disaster?.id, snap.algorithmTrace.length]);
 
   useEffect(() => {
+    // Object selection should always reveal the inspector. This is especially
+    // important for dependency tracing: selecting an asset is the entry point
+    // to the cascade graph.
+    if (snap.selectedId && !snap.disaster) setShowScenario(false);
+  }, [snap.selectedId, snap.disaster?.id]);
+
+  useEffect(() => {
     // Ordinary incidents (collision/fire/random road events) automatically open
     // the operations board once so dispatch, nearby facilities and detours are
     // visible without requiring the judge to hunt through menus.

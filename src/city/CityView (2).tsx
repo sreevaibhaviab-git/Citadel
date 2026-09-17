@@ -87,6 +87,24 @@ export default function CityView() {
   }, [snap.disaster?.id, snap.algorithmTrace.length]);
 
   useEffect(() => {
+    // Object selection should always reveal the inspector. This is especially
+    // important for dependency tracing: selecting an asset is the entry point
+    // to the cascade graph.
+    // Any map selection must win over the scenario console. A judge should never
+    // click an asset/road during a disaster and see nothing happen.
+    if (snap.selectedId) setShowScenario(false);
+  }, [snap.selectedId, snap.disaster?.id]);
+
+  useEffect(() => {
+    if (!snap.hazardPlacement) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') sim.armHazardPlacement(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sim, snap.hazardPlacement]);
+
+  useEffect(() => {
     // Ordinary incidents (collision/fire/random road events) automatically open
     // the operations board once so dispatch, nearby facilities and detours are
     // visible without requiring the judge to hunt through menus.
@@ -106,6 +124,20 @@ export default function CityView() {
         <Notices snap={snap} />
         <LocationSearch world={world} sim={sim} />
         <RoadHoverCard snap={snap} />
+
+        {snap.hazardPlacement && (
+          <div className="pointer-events-auto absolute left-1/2 top-[64px] -translate-x-1/2 border border-white/15 bg-[#071019]/90 px-4 py-3 shadow-2xl backdrop-blur-xl">
+            <div className="flex items-center gap-5">
+              <div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.22em] text-white/45">SCENARIO TARGETING</div>
+                <div className="mt-1 text-[12px] font-medium uppercase tracking-[0.12em] text-white">{snap.hazardPlacement} // CLICK MAP TO PLACE</div>
+              </div>
+              <div className="h-7 w-px bg-white/10" />
+              <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-white/45">MOVE CURSOR TO PREVIEW IMPACT RADIUS</div>
+              <button onClick={() => sim.armHazardPlacement(null)} className="border border-white/15 px-3 py-2 font-mono text-[9px] uppercase tracking-[0.12em] text-white/70 hover:bg-white/10">CANCEL · ESC</button>
+            </div>
+          </div>
+        )}
 
         <LayerDock
           sim={sim}

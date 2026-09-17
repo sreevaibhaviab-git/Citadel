@@ -1,0 +1,31 @@
+CITADEL INTERACTION POLISH 01
+
+Replace:
+  src/city/world.ts
+  src/city/CityView.tsx
+  src/city/hud/LocationSearch.tsx
+  src/city/hud/RoadHoverCard.tsx
+
+Recommended terminal replacement on macOS after downloading all four files to ~/Downloads:
+  cp -f ~/Downloads/world.ts src/city/world.ts
+  cp -f ~/Downloads/CityView.tsx src/city/CityView.tsx
+  cp -f ~/Downloads/LocationSearch.tsx src/city/hud/LocationSearch.tsx
+  cp -f ~/Downloads/RoadHoverCard.tsx src/city/hud/RoadHoverCard.tsx
+
+Verify:
+  grep -n "DOM pointermove" src/city/world.ts
+  grep -n "SELECTED //" src/city/world.ts
+  grep -n "SEARCH BENGALURU // PRESS ENTER" src/city/hud/LocationSearch.tsx
+  grep -n "ROAD INTELLIGENCE" src/city/hud/RoadHoverCard.tsx
+
+Then:
+  npm run build
+  npm run dev
+
+Interaction checks:
+  1. TRAFFIC ON -> hover within ~20 px of a road -> ROAD INTELLIGENCE card appears.
+  2. Click while road card is visible -> full road inspector opens.
+  3. Click real mapped hospital/fire/police/power/water/metro marker -> white/cyan pulsing selection halo + inspector.
+  4. Click 3D building near a mapped infrastructure point -> snaps to mapped asset within ~240 m.
+  5. Search MG Road / Cubbon Park / Indiranagar -> result -> clear camera flight + SEARCH TARGET ring.
+  6. During an active disaster, clicking an asset or road must still open the inspector immediately.
